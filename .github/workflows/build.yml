@@ -23,22 +23,21 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Install dependencies
         run: npm install
 
       - name: Setup EAS CLI
         run: npm install -g eas-cli
 
-      - name: Build APK locally
+      - name: Build APK
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EAS_NO_VCS: 1
         run: |
           eas build --platform android --profile preview --local --non-interactive --output=./galaxie-music.apk
 
       - name: Upload APK
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: galaxie-music-apk
