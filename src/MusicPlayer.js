@@ -1,5 +1,5 @@
 /**
- * Galaxie Music v8 — Fix chips + scan auto
+ * Galaxie Music v9 — Fix scan crash (creationTime undefined)
  */
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -109,9 +109,20 @@ const parseName = (filename = '') => {
 const folderOf = (uri = '') => { try { const d = decodeURIComponent(uri); const p = d.split('/'); return p[p.length - 2] || 'Racine'; } catch (e) { return 'Racine'; } };
 const looksLikeAudio = (a) => { const m = (a.mimeType || '').toLowerCase(); const e = (a.name || '').split('.').pop().toLowerCase(); return m.startsWith('audio/') || m.startsWith('video/') || m === 'application/ogg' || AUDIO_EXTENSIONS.has(e); };
 
-const fromMetadata = (m) => ({ id: `lib:${m.id}`, uri: m.uri, duration: m.duration ? m.duration / 1000 : 0, addedAt: m.creationTime || 0, folder: folderOf(m.uri), ...parseName(m.filename || '') });
+// ✅ FIX : protège contre les éléments undefined/null
+const fromMetadata = (m) => {
+  if (!m || !m.id) return null;
+  return {
+    id: `lib:${m.id}`,
+    uri: m.uri,
+    duration: m.duration ? m.duration / 1000 : 0,
+    addedAt: m.creationTime || Date.now(),
+    folder: folderOf(m.uri),
+    ...parseName(m.filename || ''),
+  };
+};
 const fromPickedFile = (a) => ({ id: `file:${a.uri}`, uri: a.uri, duration: 0, addedAt: a.lastModified || Date.now(), folder: folderOf(a.uri), ...parseName(a.name || '') });
-const mergeTracks = (prev, inc) => { const map = new Map(prev.map((t) => [t.id, t])); inc.forEach((t) => map.set(t.id, t)); return Array.from(map.values()); };
+const mergeTracks = (prev, inc) => { const map = new Map(prev.map((t) => [t.id, t])); inc.forEach((t) => { if (t && t.id) map.set(t.id, t); }); return Array.from(map.values()); };
 
 const styles = StyleSheet.create({
   root: { flex: 1 }, screen: { flex: 1 }, pressed: { opacity: 0.6 },
@@ -122,16 +133,10 @@ const styles = StyleSheet.create({
   brandSub: { fontSize: 12, marginTop: 1 },
   topActions: { flexDirection: 'row', gap: 6 },
   iconBtn: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
-
-  // ✅ FIX : conteneur à hauteur fixe pour éviter l'étirement
   filterWrapper: { height: 44, marginTop: 10 },
   filterRow: { flexDirection: 'row', gap: 6, paddingHorizontal: 16, alignItems: 'center' },
-  filterChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 5,
-    height: 34, paddingHorizontal: 12, borderRadius: 17, borderWidth: 1,
-  },
+  filterChip: { flexDirection: 'row', alignItems: 'center', gap: 5, height: 34, paddingHorizontal: 12, borderRadius: 17, borderWidth: 1 },
   filterChipText: { fontSize: 12, fontWeight: '700' },
-
   searchBox: { flexDirection: 'row', alignItems: 'center', gap: 10, height: 44, marginHorizontal: 16, marginTop: 10, paddingHorizontal: 14, borderRadius: 14 },
   searchInput: { flex: 1, fontSize: 15, paddingVertical: 0 },
   actionsRow1: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingTop: 12 },
@@ -493,7 +498,6 @@ function Player() {
     AsyncStorage.setItem(CACHE_KEY, JSON.stringify(tracks)).catch(() => {});
   }, [tracks]);
 
-  // ✅ SCAN FIX : demande la permission si undetermined
   const scanDevice = useCallback(async (silent = false) => {
     setLibMessage('');
     if (!MediaLibrary) {
@@ -510,19 +514,16 @@ function Player() {
     if (!silent) setLibState('loading');
 
     try {
-      // 1. Vérifie la permission actuelle
       const current = await MediaLibrary.getPermissionsAsync();
       console.log('[scan] permission actuelle:', current.status, 'canAskAgain:', current.canAskAgain);
       let granted = current.granted;
 
-      // 2. Si jamais demandée → la demande
       if (!granted && (current.status === 'undetermined' || current.canAskAgain)) {
         const asked = await MediaLibrary.requestPermissionsAsync();
         console.log('[scan] après demande:', asked.status, asked.granted);
         granted = asked.granted;
       }
 
-      // 3. Si toujours refusée → tente granulaire
       if (!granted) {
         try {
           const granular = await MediaLibrary.requestPermissionsAsync(false, ['audio']);
@@ -541,30 +542,34 @@ function Player() {
         return;
       }
 
-      // 4. Récupère les fichiers
       const found = [];
       let cursor = undefined;
       const PAGE = 500;
       for (let i = 0; i < 30; i++) {
         const result = await MediaLibrary.getAssetsAsync({
           mediaType: MediaLibrary.MediaType.audio,
-          sortBy: [MediaLibrary.SortBy.creationTime],
+          sortBy: [MediaLibrary.SortBy.default],
           first: PAGE,
           after: cursor,
         });
-        found.push(...result.assets);
-        if (!result.hasNextPage) break;
+        // ✅ FIX : filtre les éléments null/undefined
+        if (result && Array.isArray(result.assets)) {
+          found.push(...result.assets.filter(Boolean));
+        }
+        if (!result || !result.hasNextPage) break;
         cursor = result.endCursor;
       }
 
       console.log('[scan] fichiers trouvés:', found.length);
-      setTracks((prev) => mergeTracks(prev, found.map(fromMetadata)));
+      // ✅ FIX : filtre les null après map
+      const mapped = found.map(fromMetadata).filter(Boolean);
+      setTracks((prev) => mergeTracks(prev, mapped));
       setLibState('ready');
-      setLibMessage(`${found.length} titres scannés`);
+      setLibMessage(`${mapped.length} titres scannés`);
 
       if (!silent) {
-        showToast(found.length > 0
-          ? `${found.length} fichier(s) trouvé(s)`
+        showToast(mapped.length > 0
+          ? `${mapped.length} fichier(s) trouvé(s)`
           : 'Aucun fichier audio trouvé');
       }
     } catch (e) {
@@ -588,7 +593,6 @@ function Player() {
 
   useEffect(() => { setAudioModeAsync({ playsInSilentMode: true, shouldPlayInBackground: true, interruptionMode: 'doNotMix' }).catch(() => {}); }, []);
 
-  // ✅ AUTO-SCAN FIX : demande la permission si undetermined (fresh install)
   useEffect(() => {
     if (IS_EXPO_GO || !MediaLibrary) return;
     let cancelled = false;
@@ -601,7 +605,6 @@ function Player() {
         if (st === 'granted') {
           scanDevice(true);
         } else if (st === 'undetermined' || st === 'denied') {
-          // ✅ DEMANDE la permission (affiche la popup Android)
           scanDevice(false);
         } else {
           setLibState('manual');
@@ -817,7 +820,6 @@ function Player() {
           </View>
         </View>
 
-        {/* ✅ FIX chips : wrapper avec hauteur fixe */}
         <View style={styles.filterWrapper}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.filterRow, { paddingLeft: 16 + (insets.left || 0), paddingRight: 16 + (insets.right || 0) }]}>
             {LIBRARY_TABS.map((f) => {
@@ -929,7 +931,6 @@ function Player() {
                     : 'Appuie sur + pour ajouter des MP3.'}
                 </Text>
 
-                {/* Message de debug */}
                 {libMessage && !IS_EXPO_GO && (
                   <Text style={styles.debugText}>{libMessage}</Text>
                 )}
