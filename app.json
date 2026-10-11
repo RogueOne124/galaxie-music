@@ -7,13 +7,12 @@
     "icon": "./assets/images/icon.png",
     "scheme": "galaxiemusic",
     "userInterfaceStyle": "dark",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.riad.galaxiemusic",
       "infoPlist": {
-        "UIBackgroundModes": ["audio"],
-        "NSAppleMusicUsageDescription": "Cette app accède à votre bibliothèque musicale."
+        "UIBackgroundModes": ["audio"]
       }
     },
     "android": {
@@ -22,7 +21,6 @@
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundColor": "#0E1015"
       },
-      "edgeToEdgeEnabled": false,
       "permissions": [
         "READ_MEDIA_AUDIO",
         "READ_EXTERNAL_STORAGE",
@@ -31,23 +29,18 @@
         "FOREGROUND_SERVICE_MEDIA_PLAYBACK",
         "POST_NOTIFICATIONS",
         "WAKE_LOCK",
-        "MODIFY_AUDIO_SETTINGS",
-        "android.permission.BLUETOOTH_CONNECT",
-        "android.permission.BLUETOOTH_SCAN"
+        "MODIFY_AUDIO_SETTINGS"
       ]
-    },
-    "web": {
-      "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
       "expo-router",
+      "expo-audio",
       "expo-font",
       [
         "expo-media-library",
         {
           "photosPermission": false,
           "savePhotosPermission": false,
-          "isAccessMediaLocationEnabled": false,
           "granularPermissions": ["audio"]
         }
       ],
@@ -69,23 +62,10 @@
             "buildToolsVersion": "36.0.0"
           }
         }
-      ],
-      [
-        "react-native-queue-player",
-        {
-          "carplay": false,
-          "siri": false,
-          "chromecast": false
-        }
       ]
     ],
     "experiments": {
       "typedRoutes": true
-    },
-    "extra": {
-      "eas": {
-        "projectId": "e2d005d9-72b4-4bf8-b15c-2287d0f6d09c"
-      }
     }
   }
 }
