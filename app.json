@@ -66,6 +66,11 @@
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "e2d005d9-72b4-4bf8-b15c-2287d0f6d09c"
+      }
     }
   }
 }
