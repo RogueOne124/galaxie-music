@@ -2,7 +2,7 @@
   "expo": {
     "name": "Galaxie Music",
     "slug": "galaxie-music",
-    "version": "1.0.3",
+    "version": "1.0.4",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "galaxiemusic",
@@ -31,7 +31,9 @@
         "FOREGROUND_SERVICE_MEDIA_PLAYBACK",
         "POST_NOTIFICATIONS",
         "WAKE_LOCK",
-        "MODIFY_AUDIO_SETTINGS"
+        "MODIFY_AUDIO_SETTINGS",
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.BLUETOOTH_SCAN"
       ]
     },
     "web": {
@@ -39,7 +41,6 @@
     },
     "plugins": [
       "expo-router",
-      "expo-audio",
       "expo-font",
       [
         "expo-media-library",
@@ -68,7 +69,9 @@
             "buildToolsVersion": "36.0.0"
           }
         }
-      ]
+      ],
+      "react-native-track-player",
+      "expo-dev-client"
     ],
     "experiments": {
       "typedRoutes": true
