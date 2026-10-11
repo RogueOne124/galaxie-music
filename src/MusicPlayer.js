@@ -1,10 +1,10 @@
 /**
- * Galaxie Music v10 — Version react-native-track-player
- * Background permanent + contrôles lockscreen + queue native
+ * Galaxie Music v9 — Version stable expo-audio
  */
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Slider from '@react-native-community/slider';
+import { setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import Constants from 'expo-constants';
 import * as DocumentPicker from 'expo-document-picker';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -17,13 +17,6 @@ import {
 import {
   SafeAreaProvider, SafeAreaView, useSafeAreaInsets,
 } from 'react-native-safe-area-context';
-import TrackPlayer, {
-  AppKilledPlaybackBehavior,
-  Capability, RepeatMode,
-  State,
-  useActiveTrack,
-  usePlaybackState, useProgress,
-} from 'react-native-track-player';
 
 const IS_EXPO_GO = Constants.executionEnvironment === 'storeClient' || Constants.appOwnership === 'expo';
 let MediaLibrary = null; let VolumeManager = null;
@@ -64,6 +57,7 @@ const SLEEP_OPTIONS = [
 ];
 
 const ROW_HEIGHT = 68;
+const PLAYER_OPTIONS = { updateInterval: 250 };
 const SECURE_KEYS = { FAV: 'galaxie_favorites', HIDDEN: 'galaxie_hidden' };
 const CACHE_KEY = '@galaxie/tracks_cache';
 const HISTORY_KEY = '@galaxie/history';
@@ -375,12 +369,8 @@ function Player() {
   const { width, height } = useWindowDimensions();
   const [themeId, setThemeId] = useState('galaxy');
   const colors = useMemo(() => getThemeColors(themeId), [themeId]);
-
-  // ✅ react-native-track-player hooks
-  const playbackState = usePlaybackState();
-  const { position, duration: playerDuration } = useProgress(500);
-  const activeTrack = useActiveTrack();
-  const isPlaying = playbackState.state === State.Playing;
+  const player = useAudioPlayer(null, PLAYER_OPTIONS);
+  const status = useAudioPlayerStatus(player);
 
   const [tracks, setTracks] = useState([]);
   const [libState, setLibState] = useState(IS_EXPO_GO ? 'manual' : 'loading');
@@ -416,10 +406,17 @@ function Player() {
   const [seekValue, setSeekValue] = useState(0);
   const [toast, setToast] = useState(null);
 
+  const currentRef = useRef(null);
   const queueRef = useRef([]);
+  const baseRef = useRef([]);
+  const endHandled = useRef(false);
+  const startedAt = useRef(0);
+  const failStreak = useRef(0);
+  const errorTimer = useRef(null);
   const toastTimer = useRef(null);
   const sleepTimerRef = useRef(null);
-  const playerReady = useRef(false);
+  const latest = useRef({});
+  const lockScreenActive = useRef(false);
 
   const sortKey = SORTS[sortIndex].key;
   const byId = useMemo(() => new Map(tracks.map((t) => [t.id, t])), [tracks]);
@@ -449,9 +446,9 @@ function Player() {
     return list;
   }, [tracks, query, sortKey, filter, favorites, hidden, history, activeFolder]);
 
-  const duration = playerDuration > 0 ? playerDuration : (current && current.duration) || 0;
-  const currentPosition = Math.min(position || 0, duration || 0);
-  const progress = duration ? currentPosition / duration : 0;
+  const duration = status.duration > 0 ? status.duration : (current && current.duration) || 0;
+  const position = Math.min(status.currentTime || 0, duration || 0);
+  const progress = duration ? position / duration : 0;
   const effectiveVolume = muted ? 0 : volume;
   let volumeIcon = 'volume-high';
   if (effectiveVolume === 0) volumeIcon = 'volume-mute';
@@ -462,39 +459,6 @@ function Player() {
   const showToast = useCallback((msg) => {
     setToast(msg); clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(null), 2800);
-  }, []);
-
-  // ✅ Initialisation de TrackPlayer + updateOptions
-  useEffect(() => {
-    const setup = async () => {
-      try {
-        await TrackPlayer.setupPlayer();
-        await TrackPlayer.updateOptions({
-          android: {
-            appKilledPlaybackBehavior: AppKilledPlaybackBehavior.ContinuePlayback,
-          },
-          capabilities: [
-            Capability.Play,
-            Capability.Pause,
-            Capability.SkipToNext,
-            Capability.SkipToPrevious,
-            Capability.Stop,
-            Capability.SeekTo,
-          ],
-          compactCapabilities: [
-            Capability.Play,
-            Capability.Pause,
-            Capability.SkipToNext,
-          ],
-          progressUpdateEventInterval: 1,
-        });
-        playerReady.current = true;
-        console.log('[track-player] ✅ ready');
-      } catch (e) {
-        console.warn('[track-player] setup error:', e.message);
-      }
-    };
-    setup();
   }, []);
 
   useEffect(() => {
@@ -533,59 +497,10 @@ function Player() {
     AsyncStorage.setItem(CACHE_KEY, JSON.stringify(tracks)).catch(() => {});
   }, [tracks]);
 
-  // Volume système
-  useEffect(() => {
-    if (!VolumeManager) return;
-    let listener = null;
-    (async () => {
-      try { const { volume: v } = await VolumeManager.getVolume(); if (typeof v === 'number') setVolume(v); } catch (e) {}
-      try { listener = VolumeManager.addVolumeListener((r) => { setVolume(r.volume); setMuted(r.volume === 0); }); } catch (e) {}
-    })();
-    return () => { try { listener?.remove?.(); } catch (e) {} };
-  }, []);
-
-  // Vitesse
-  useEffect(() => {
-    if (playerReady.current) {
-      TrackPlayer.setRate(playbackSpeed).catch(() => {});
-    }
-  }, [playbackSpeed]);
-
-  // Sleep timer
-  useEffect(() => {
-    clearInterval(sleepTimerRef.current);
-    if (sleepTimerMin <= 0) { setSleepRemaining(0); return; }
-    setSleepRemaining(sleepTimerMin * 60);
-    sleepTimerRef.current = setInterval(() => {
-      setSleepRemaining((s) => {
-        if (s <= 1) {
-          clearInterval(sleepTimerRef.current);
-          TrackPlayer.pause().catch(() => {});
-          showToast('⏰ Minuteur éteint la musique');
-          setSleepTimerMin(0);
-          return 0;
-        }
-        return s - 1;
-      });
-    }, 1000);
-    return () => clearInterval(sleepTimerRef.current);
-  }, [sleepTimerMin, showToast]);
-
-  useEffect(() => () => { clearTimeout(toastTimer.current); clearInterval(sleepTimerRef.current); }, []);
-
-  // ✅ Scan média
   const scanDevice = useCallback(async (silent = false) => {
     setLibMessage('');
-    if (!MediaLibrary) {
-      setLibState('manual');
-      setLibMessage('Module média non chargé');
-      return;
-    }
-    if (Platform.OS !== 'android') {
-      setLibState('manual');
-      setLibMessage('Non supporté sur iOS/web');
-      return;
-    }
+    if (!MediaLibrary) { setLibState('manual'); setLibMessage('Module média non chargé'); return; }
+    if (Platform.OS !== 'android') { setLibState('manual'); return; }
     if (!silent) setLibState('loading');
 
     try {
@@ -654,6 +569,8 @@ function Player() {
     } catch (e) { showToast("Impossible d'ouvrir le sélecteur"); }
   }, [showToast]);
 
+  useEffect(() => { setAudioModeAsync({ playsInSilentMode: true, shouldPlayInBackground: true, interruptionMode: 'doNotMix' }).catch(() => {}); }, []);
+
   useEffect(() => {
     if (IS_EXPO_GO || !MediaLibrary) return;
     let cancelled = false;
@@ -680,62 +597,80 @@ function Player() {
 
   const rescan = useCallback(() => scanDevice(false), [scanDevice]);
 
-  const handleVolumeChange = useCallback((v) => {
-    setVolume(v); setMuted(v === 0);
-    if (VolumeManager) { try { VolumeManager.setVolume(v); } catch (e) {} }
-    if (playerReady.current) TrackPlayer.setVolume(muted ? 0 : v).catch(() => {});
-  }, [muted]);
+  useEffect(() => {
+    if (!VolumeManager) return;
+    let listener = null;
+    (async () => {
+      try { const { volume: v } = await VolumeManager.getVolume(); if (typeof v === 'number') setVolume(v); } catch (e) {}
+      try { listener = VolumeManager.addVolumeListener((r) => { setVolume(r.volume); setMuted(r.volume === 0); }); } catch (e) {}
+    })();
+    return () => { try { listener?.remove?.(); } catch (e) {} };
+  }, []);
 
-  // ✅ Lecture via TrackPlayer
-  const startTrack = async (id, list = null) => {
+  useEffect(() => { player.volume = volume; player.muted = muted; }, [player, volume, muted, currentId]);
+  useEffect(() => { if (player && 'playbackRate' in player) { try { player.playbackRate = playbackSpeed; } catch (e) {} } }, [player, playbackSpeed, currentId]);
+
+  useEffect(() => {
+    clearInterval(sleepTimerRef.current);
+    if (sleepTimerMin <= 0) { setSleepRemaining(0); return; }
+    setSleepRemaining(sleepTimerMin * 60);
+    sleepTimerRef.current = setInterval(() => {
+      setSleepRemaining((s) => {
+        if (s <= 1) { clearInterval(sleepTimerRef.current); try { player.pause(); } catch (e) {} showToast('⏰ Minuteur éteint la musique'); setSleepTimerMin(0); return 0; }
+        return s - 1;
+      });
+    }, 1000);
+    return () => clearInterval(sleepTimerRef.current);
+  }, [sleepTimerMin, player, showToast]);
+
+  useEffect(() => {
+    const sub = player.addListener('playbackStatusUpdate', (s) => {
+      if (s.playing) failStreak.current = 0;
+      if (s.error) {
+        if (!errorTimer.current) {
+          errorTimer.current = setTimeout(() => {
+            errorTimer.current = null;
+            if (!endHandled.current) { endHandled.current = true; latest.current.onError(); }
+          }, 500);
+        }
+        return;
+      }
+      if (errorTimer.current) { clearTimeout(errorTimer.current); errorTimer.current = null; }
+      if (s.didJustFinish && !endHandled.current && Date.now() - startedAt.current > 150) { endHandled.current = true; latest.current.onEnd(); }
+    });
+    return () => { sub.remove(); clearTimeout(errorTimer.current); errorTimer.current = null; };
+  }, [player]);
+
+  useEffect(() => () => { clearTimeout(toastTimer.current); clearTimeout(errorTimer.current); clearInterval(sleepTimerRef.current); }, []);
+
+  const handleVolumeChange = useCallback((v) => { setVolume(v); setMuted(v === 0); if (VolumeManager) { try { VolumeManager.setVolume(v); } catch (e) {} } }, []);
+
+  const startTrack = (id) => {
     const track = byId.get(id);
     if (!track) return;
-    if (!playerReady.current) {
-      // Réessaie après un délai si le player n'est pas encore prêt
-      setTimeout(() => startTrack(id, list), 300);
-      return;
-    }
+    currentRef.current = id; endHandled.current = false; startedAt.current = Date.now();
+    clearTimeout(errorTimer.current); errorTimer.current = null;
+    setCurrentId(id); setSeeking(false);
+    setHistory((h) => [id, ...h.filter((x) => x !== id)].slice(0, 100));
     try {
-      const queueList = list || visible;
-      const formatted = queueList.map((t) => ({
-        id: t.id,
-        url: t.uri,
-        title: t.title,
-        artist: t.artist,
-        duration: t.duration,
-        // react-native-track-player accepte les champs custom
-        folder: t.folder,
-      }));
-
-      // Ajoute aussi le track demandé s'il n'est pas dans la liste
-      if (!formatted.find((t) => t.id === id)) {
-        formatted.unshift({ id: track.id, url: track.uri, title: track.title, artist: track.artist, duration: track.duration, folder: track.folder });
-      }
-
-      await TrackPlayer.reset();
-      await TrackPlayer.add(formatted);
-      const idx = formatted.findIndex((t) => t.id === id);
-      if (idx > 0) await TrackPlayer.skip(idx);
-      await TrackPlayer.play();
-
-      queueRef.current = formatted.map((t) => t.id);
-      setCurrentId(id);
-      setHistory((h) => [id, ...h.filter((x) => x !== id)].slice(0, 100));
-    } catch (e) {
-      console.warn('[startTrack] error:', e);
-      showToast(`Lecture impossible : ${track.title}`);
-    }
+      player.replace({ uri: track.uri, name: track.title });
+      player.play();
+      if ('playbackRate' in player) { try { player.playbackRate = playbackSpeed; } catch (e) {} }
+      try {
+        if (lockScreenActive.current && player.updateLockScreenMetadata) { player.updateLockScreenMetadata({ title: track.title, artist: track.artist }); }
+        else if (player.setActiveForLockScreen) {
+          player.setActiveForLockScreen(true, { title: track.title, artist: track.artist }, { showSeekBackward: true, showSeekForward: true });
+          lockScreenActive.current = true;
+        }
+      } catch (e) {}
+    } catch (e) { showToast(`Lecture impossible : ${track.title}`); }
   };
 
   const playFrom = (id, list = visible, randomOrder = shuffle) => {
     const ids = list.map((t) => t.id);
-    if (randomOrder) {
-      const shuffledIds = [id, ...shuffled(ids.filter((x) => x !== id))];
-      const shuffledList = shuffledIds.map((tid) => byId.get(tid)).filter(Boolean);
-      startTrack(id, shuffledList);
-    } else {
-      startTrack(id, list);
-    }
+    baseRef.current = ids;
+    queueRef.current = randomOrder ? [id, ...shuffled(ids.filter((x) => x !== id))] : ids;
+    startTrack(id);
   };
 
   const playAll = (randomOrder) => {
@@ -745,54 +680,26 @@ function Player() {
     playFrom(first.id, visible, randomOrder);
   };
 
-  const step = async (dir) => {
-    try {
-      if (dir > 0) await TrackPlayer.skipToNext();
-      else await TrackPlayer.skipToPrevious();
-      await TrackPlayer.play();
-      const active = await TrackPlayer.getActiveTrack();
-      if (active && active.id) setCurrentId(active.id);
-    } catch (e) {
-      // Fin de queue
+  const step = (dir, auto = false) => {
+    const queue = queueRef.current;
+    if (!queue.length) return;
+    let next = queue.indexOf(currentRef.current) + dir;
+    if (next < 0 || next >= queue.length) {
+      if (auto && repeat !== 'all') { player.pause(); player.seekTo(0); return; }
+      next = (next + queue.length) % queue.length;
     }
+    startTrack(queue[next]);
   };
 
-  const togglePlay = async () => {
-    if (!current) {
-      if (visible.length) startTrack(visible[0].id);
-      return;
-    }
-    if (isPlaying) await TrackPlayer.pause();
-    else await TrackPlayer.play();
-  };
-
-  const previous = async () => {
-    if (currentPosition > 3) {
-      await TrackPlayer.seekTo(0);
-      return;
-    }
-    step(-1);
-  };
-
-  const toggleShuffle = async () => {
-    const next = !shuffle;
-    setShuffle(next);
-    try { await TrackPlayer.setQueue(shuffle ? queueRef.current : shuffled(queueRef.current).map((id) => id)); } catch (e) {}
-  };
-
-  const cycleRepeat = async () => {
-    const next = repeat === 'off' ? 'all' : repeat === 'all' ? 'one' : 'off';
-    setRepeat(next);
-    try {
-      if (next === 'off') await TrackPlayer.setRepeatMode(RepeatMode.Off);
-      else if (next === 'all') await TrackPlayer.setRepeatMode(RepeatMode.Queue);
-      else await TrackPlayer.setRepeatMode(RepeatMode.Track);
-    } catch (e) {}
-  };
-
+  const onEnd = () => { if (repeat === 'one') { endHandled.current = false; player.seekTo(0); player.play(); return; } step(1, true); };
+  const onError = () => { const track = byId.get(currentRef.current); showToast(`Format non pris en charge : ${track ? track.title : 'fichier'}`); failStreak.current += 1; if (failStreak.current >= 5) { failStreak.current = 0; return; } step(1, true); };
+  const togglePlay = () => { if (!current) { if (visible.length) playFrom(visible[0].id); return; } if (status.playing) { player.pause(); return; } if (status.duration > 0 && status.currentTime >= status.duration - 0.3) player.seekTo(0); endHandled.current = false; player.play(); };
+  const previous = () => { if (status.currentTime > 3) { player.seekTo(0); return; } step(-1); };
+  const toggleShuffle = () => { const next = !shuffle; setShuffle(next); const base = baseRef.current; const now = currentRef.current; queueRef.current = next && now ? [now, ...shuffled(base.filter((x) => x !== now))] : base; };
+  const cycleRepeat = () => setRepeat((r) => (r === 'off' ? 'all' : r === 'all' ? 'one' : 'off'));
   const cycleSort = () => setSortIndex((i) => (i + 1) % SORTS.length);
   const toggleSearch = () => { setSearchOpen((o) => !o); setQuery(''); };
-  const handleRowPress = (id) => { if (id === currentId) { setFullOpen(true); return; } playFrom(id); };
+  const handleRowPress = (id) => { if (id === currentRef.current) { setFullOpen(true); return; } playFrom(id); };
   const handleRowLongPress = (track) => { setCtxTrack(track); setCtxOpen(true); };
 
   const toggleFavorite = useCallback((track) => {
@@ -803,23 +710,24 @@ function Player() {
     setHidden((prev) => { const next = new Set(prev); if (next.has(track.id)) { next.delete(track.id); showToast('Titre affiché'); } else { next.add(track.id); showToast('Titre masqué'); } return next; });
   }, [showToast]);
 
-  const addToQueue = useCallback(async (track) => {
+  const addToQueue = useCallback((track) => {
     if (queueRef.current.includes(track.id)) { showToast('Déjà dans la file'); return; }
-    try {
-      await TrackPlayer.add({ id: track.id, url: track.uri, title: track.title, artist: track.artist, duration: track.duration });
-      queueRef.current = [...queueRef.current, track.id];
-      showToast('Ajouté à la file');
-    } catch (e) { showToast('Impossible d\'ajouter'); }
+    queueRef.current = [...queueRef.current, track.id]; showToast('Ajouté à la file');
   }, [showToast]);
 
-  const playNext = useCallback(async (track) => {
-    try {
-      const currentIdx = queueRef.current.indexOf(currentId);
-      await TrackPlayer.add({ id: track.id, url: track.uri, title: track.title, artist: track.artist, duration: track.duration }, Math.max(0, currentIdx + 1));
-      queueRef.current = [...queueRef.current.slice(0, currentIdx + 1), track.id, ...queueRef.current.slice(currentIdx + 1)];
-      showToast('Sera lu juste après ⏭️');
-    } catch (e) { showToast('Impossible'); }
-  }, [currentId, showToast]);
+  const playNext = useCallback((track) => {
+    const queue = queueRef.current;
+    const curIdx = queue.indexOf(currentRef.current);
+    if (curIdx === -1) {
+      if (queue.length === 0) { baseRef.current = [track.id]; queueRef.current = [track.id]; }
+      else { queueRef.current = [track.id, ...queue.filter((x) => x !== track.id)]; }
+      startTrack(track.id); showToast('Lecture lancée'); return;
+    }
+    const filtered = queue.filter((x) => x !== track.id);
+    const newIdx = filtered.indexOf(currentRef.current);
+    filtered.splice(newIdx + 1, 0, track.id);
+    queueRef.current = filtered; baseRef.current = filtered; showToast('Sera lu juste après ⏭️');
+  }, [showToast]);
 
   const showInfo = useCallback((track) => {
     Alert.alert(track.title, `Artiste : ${track.artist}\nDossier : ${track.folder || 'Racine'}\nFormat : ${track.ext ? track.ext.toUpperCase() : 'inconnu'}\nDurée : ${track.duration ? formatTime(track.duration) : 'inconnue'}\nSource : ${track.id.startsWith('lib:') ? 'Bibliothèque' : 'Importé'}\n\nURI :\n${track.uri}`, [{ text: 'OK' }]);
@@ -835,12 +743,12 @@ function Player() {
           if (!track.id.startsWith('lib:') || !MediaLibrary) { showToast('Non disponible'); return; }
           await MediaLibrary.deleteAssetsAsync([track.id.replace('lib:', '')]);
           setTracks((prev) => prev.filter((t) => t.id !== track.id));
-          if (currentId === track.id) { await TrackPlayer.reset(); setCurrentId(null); }
+          if (currentRef.current === track.id) { currentRef.current = null; setCurrentId(null); player.pause(); }
           showToast('Titre supprimé');
         } catch (e) { showToast('Impossible de supprimer'); }
       }},
     ]);
-  }, [currentId, showToast]);
+  }, [player, showToast]);
 
   const shareTrack = useCallback(async (track) => {
     try {
@@ -851,14 +759,15 @@ function Player() {
     } catch (e) { showToast('Impossible de partager'); }
   }, [showToast]);
 
-  const onRowPress = useCallback((id) => handleRowPress(id), [currentId]);
+  useEffect(() => { latest.current = { onEnd, onError, handleRowPress }; });
+  const onRowPress = useCallback((id) => latest.current.handleRowPress(id), []);
   const onRowLongPress = useCallback((track) => handleRowLongPress(track), []);
 
   const renderItem = useCallback(
     ({ item, index }) => (
-      <TrackRow item={item} active={item.id === currentId} playing={isPlaying} onPress={onRowPress} onLongPress={onRowLongPress} isFav={favorites.has(item.id)} colors={colors} index={filter === 'folders' && activeFolder ? index : undefined} />
+      <TrackRow item={item} active={item.id === currentId} playing={status.playing} onPress={onRowPress} onLongPress={onRowLongPress} isFav={favorites.has(item.id)} colors={colors} index={filter === 'folders' && activeFolder ? index : undefined} />
     ),
-    [currentId, isPlaying, onRowPress, onRowLongPress, favorites, colors, filter, activeFolder],
+    [currentId, status.playing, onRowPress, onRowLongPress, favorites, colors, filter, activeFolder],
   );
 
   const getItemLayout = useCallback((_, index) => ({ length: ROW_HEIGHT, offset: ROW_HEIGHT * index, index }), []);
@@ -959,7 +868,7 @@ function Player() {
         ) : (
           <FlatList
             style={styles.list} data={visible} keyExtractor={keyExtractor} renderItem={renderItem} getItemLayout={getItemLayout}
-            extraData={`${currentId}|${isPlaying}|${themeId}|${favorites.size}|${hidden.size}|${filter}|${activeFolder}|${libState}`}
+            extraData={`${currentId}|${status.playing}|${themeId}|${favorites.size}|${hidden.size}|${filter}|${activeFolder}|${libState}`}
             initialNumToRender={14} maxToRenderPerBatch={12} windowSize={9} removeClippedSubviews keyboardShouldPersistTaps="handled"
             contentContainerStyle={{ paddingBottom: (current ? 100 : 24) + insets.bottom }}
             ListHeaderComponent={activeFolder ? (
@@ -1034,14 +943,14 @@ function Player() {
         {current && (
           <Pressable style={[styles.mini, { bottom: insets.bottom + 12, backgroundColor: colors.surfaceHigh, borderColor: colors.line, left: 12 + (insets.left || 0), right: 12 + (insets.right || 0) }]} onPress={() => setFullOpen(true)}>
             <LinearGradient colors={[colors.accent + '18', 'transparent']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={StyleSheet.absoluteFillObject} pointerEvents="none" />
-            <Artwork title={current.title} size={48} radius={12} playing={isPlaying} colors={colors} />
+            <Artwork title={current.title} size={48} radius={12} playing={status.playing} colors={colors} />
             <View style={styles.miniText}>
               <Text numberOfLines={1} style={[styles.miniTitle, { color: colors.text }]}>{current.title}</Text>
               <Text numberOfLines={1} style={[styles.miniSub, { color: colors.textDim }]}>{current.artist}</Text>
             </View>
-            {isPlaying && <AnimatedEqualizer color={colors.accent} size={20} />}
+            {status.playing && <AnimatedEqualizer color={colors.accent} size={20} />}
             <IconButton name={favorites.has(current.id) ? 'heart' : 'heart-outline'} size={22} colors={colors} color={favorites.has(current.id) ? colors.accent : colors.text} onPress={() => toggleFavorite(current)} />
-            <IconButton name={isPlaying ? 'pause' : 'play'} size={26} colors={colors} onPress={togglePlay} />
+            <IconButton name={status.playing ? 'pause' : 'play'} size={26} colors={colors} onPress={togglePlay} />
             <IconButton name="play-skip-forward" colors={colors} onPress={() => step(1)} />
             <View style={[styles.miniProgressTrack, { backgroundColor: colors.line }]}>
               <LinearGradient colors={[colors.accent, colors.accent2]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={[styles.miniProgressFill, { width: `${progress * 100}%` }]} />
@@ -1117,9 +1026,9 @@ function Player() {
           queueRef.current.map((id, index) => {
             const t = byId.get(id);
             if (!t) return null;
-            const isCurrent = id === currentId;
+            const isCurrent = id === currentRef.current;
             return (
-              <Pressable key={id} style={styles.queueRow} onPress={() => { TrackPlayer.skip(index).then(() => TrackPlayer.play()).catch(() => {}); setCurrentId(id); setQueueOpen(false); }}>
+              <Pressable key={id} style={styles.queueRow} onPress={() => { startTrack(id); setQueueOpen(false); }}>
                 <Text style={[styles.queueIndex, { color: isCurrent ? colors.accent : colors.textDim }]}>{index + 1}</Text>
                 {isCurrent ? <AnimatedEqualizer color={colors.accent} size={16} /> : <Ionicons name="musical-note" size={16} color={colors.textDim} />}
                 <View style={styles.queueInfo}>
@@ -1142,15 +1051,15 @@ function Player() {
           </View>
           <View style={styles.fullArt}>
             <LinearGradient colors={[colors.accent + '55', colors.accent2 + '33', 'transparent']} start={{ x: 0.5, y: 0.5 }} end={{ x: 0.5, y: 1 }} style={styles.fullArtGlow} pointerEvents="none" />
-            <Artwork title={current ? current.title : ''} size={artSize} radius={24} playing={isPlaying} colors={colors} />
+            <Artwork title={current ? current.title : ''} size={artSize} radius={24} playing={status.playing} colors={colors} />
           </View>
           <View style={styles.fullInfo}>
             <Text numberOfLines={1} style={[styles.fullTitle, { color: colors.text }]}>{current ? current.title : ''}</Text>
             <Text numberOfLines={1} style={[styles.fullArtist, { color: colors.textDim }]}>{current ? current.artist : ''}{current && current.ext ? ` · ${current.ext.toUpperCase()}` : ''}</Text>
           </View>
-          <Slider style={styles.seek} minimumValue={0} maximumValue={Math.max(duration, 1)} value={seeking ? seekValue : currentPosition} disabled={!current || !duration} minimumTrackTintColor={colors.accent} maximumTrackTintColor={colors.line} thumbTintColor={colors.accent} onSlidingStart={(v) => { setSeekValue(v); setSeeking(true); }} onValueChange={(v) => { if (seeking) setSeekValue(v); }} onSlidingComplete={async (v) => { try { await TrackPlayer.seekTo(v); } finally { setSeeking(false); } }} />
+          <Slider style={styles.seek} minimumValue={0} maximumValue={Math.max(duration, 1)} value={seeking ? seekValue : position} disabled={!current || !duration} minimumTrackTintColor={colors.accent} maximumTrackTintColor={colors.line} thumbTintColor={colors.accent} onSlidingStart={(v) => { setSeekValue(v); setSeeking(true); }} onValueChange={(v) => { if (seeking) setSeekValue(v); }} onSlidingComplete={async (v) => { try { await player.seekTo(v); } finally { setSeeking(false); } }} />
           <View style={styles.timeRow}>
-            <Text style={[styles.time, { color: colors.textDim }]}>{formatTime(seeking ? seekValue : currentPosition)}</Text>
+            <Text style={[styles.time, { color: colors.textDim }]}>{formatTime(seeking ? seekValue : position)}</Text>
             <Text style={[styles.time, { color: colors.textDim }]}>{formatTime(duration)}</Text>
           </View>
           <View style={styles.controls}>
@@ -1158,7 +1067,7 @@ function Player() {
             <IconButton name="play-skip-back" size={28} colors={colors} onPress={previous} />
             <Pressable onPress={togglePlay} style={({ pressed }) => [styles.playBtn, { shadowColor: colors.accent }, pressed && styles.pressed]}>
               <LinearGradient colors={[colors.accent, colors.accent2]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ width: '100%', height: '100%', alignItems: 'center', justifyContent: 'center' }}>
-                <Ionicons name={isPlaying ? 'pause' : 'play'} size={32} color={colors.onAccent} />
+                <Ionicons name={status.playing ? 'pause' : 'play'} size={32} color={colors.onAccent} />
               </LinearGradient>
             </Pressable>
             <IconButton name="play-skip-forward" size={28} colors={colors} onPress={() => step(1)} />

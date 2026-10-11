@@ -2,12 +2,12 @@
   "expo": {
     "name": "Galaxie Music",
     "slug": "galaxie-music",
-    "version": "1.0.4",
+    "version": "1.0.5",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "galaxiemusic",
     "userInterfaceStyle": "dark",
-    "newArchEnabled": false,
+    "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.riad.galaxiemusic",
@@ -68,6 +68,14 @@
             "targetSdkVersion": 36,
             "buildToolsVersion": "36.0.0"
           }
+        }
+      ],
+      [
+        "react-native-queue-player",
+        {
+          "carplay": false,
+          "siri": false,
+          "chromecast": false
         }
       ]
     ],
