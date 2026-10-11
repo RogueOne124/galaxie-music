@@ -69,9 +69,7 @@
             "buildToolsVersion": "36.0.0"
           }
         }
-      ],
-      "react-native-track-player",
-      "expo-dev-client"
+      ]
     ],
     "experiments": {
       "typedRoutes": true
